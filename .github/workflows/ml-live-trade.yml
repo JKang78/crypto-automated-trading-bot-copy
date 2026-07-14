@@ -1,14 +1,14 @@
 name: ML Strategy LIVE Trading (real money)
 
 # ⚠️ THIS PLACES REAL ORDERS ON KRAKEN via ml_live_trade.py.
-# This is now the ONLY scheduled live trading controller. It runs the ML V2
-# strategy with the long-history profit profile selected by research.
-# The AI strategy router has been removed.
+# This is now the ONLY scheduled live trading controller. It runs the
+# profit-tuned ML V2 profile below. It scans frequently, but does not force
+# weak trades just to stay active.
 # Run manually with dry_run=true from GitHub Actions to test safely.
 
 on:
   schedule:
-    - cron: '0 * * * *'   # hourly (data is 1h; holds are ~3 days)
+    - cron: '*/15 * * * *'   # every 15 minutes (same cadence as the first bot)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -62,23 +62,21 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         ML_LIVE_STRATEGY: ${{ github.event.inputs.strategy || 'v2' }}
-        ML_LIVE_SYMBOLS: 'SOL-USD,LINK-USD,DOGE-USD'
+        ML_LIVE_SYMBOLS: 'SOL-USD,LINK-USD,DOGE-USD,XRP-USD,ADA-USD'
+        ML_LIVE_BUY_THR: '0.65'
+        ML_LIVE_HORIZON: '48'
+        ML_LIVE_EXIT_THR: '0.40'
+        ML_LIVE_USE_DYNAMIC_THRESHOLD: 'false'
         ML_LIVE_LEVERAGE: '2'
-        ML_LIVE_POSITION_FRACTION: '0.25'
-        ML_LIVE_CONFIDENCE_SIZING: 'true'
-        ML_LIVE_CONFIDENCE_LOW_PROB: '0.72'
-        ML_LIVE_CONFIDENCE_HIGH_PROB: '0.78'
-        ML_LIVE_CONFIDENCE_LOW_FRACTION: '0.15'
-        ML_LIVE_CONFIDENCE_MID_FRACTION: '0.25'
-        ML_LIVE_CONFIDENCE_HIGH_FRACTION: '0.35'
+        ML_LIVE_POSITION_FRACTION: '0.20'
+        ML_LIVE_CONFIDENCE_SIZING: 'false'
         ML_LIVE_MARGIN_SAFETY: '1.0'
         ML_LIVE_ALLOW_MIN_SIZE_BUMP: 'true'
-        ML_LIVE_MAX_OPEN: '3'
+        ML_LIVE_MAX_OPEN: '5'
         ML_LIVE_LONG_ONLY: 'true'
         ML_LIVE_FNG_FEATURES: 'true'
-        ML_LIVE_FNG_FILTER: 'true'
-        ML_LIVE_MAKER_ENTRY: 'true'
-        ML_LIVE_MAKER_WAIT_SEC: '90'
+        ML_LIVE_FNG_FILTER: 'false'
+        ML_LIVE_MAKER_ENTRY: 'false'
         ML_LIVE_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       run: |
         echo "ML LIVE TRADER (strategy=${ML_LIVE_STRATEGY})"

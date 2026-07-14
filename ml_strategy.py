@@ -487,6 +487,7 @@ class MLSwingStrategy:
         use_expected_value_filter: bool = False,
         ev_cost_multiplier: float = 1.5,
         use_ev_exit: bool = True,
+        use_dynamic_threshold: bool = True,
     ):
         self.horizon = horizon
         self.buy_thr = buy_thr
@@ -505,6 +506,7 @@ class MLSwingStrategy:
         self.use_expected_value_filter = use_expected_value_filter
         self.ev_cost_multiplier = ev_cost_multiplier
         self.use_ev_exit = use_ev_exit
+        self.use_dynamic_threshold = use_dynamic_threshold
 
     def _train_and_predict(self, data: pd.DataFrame, btc_data: Optional[pd.DataFrame] = None) -> tuple:
         """
@@ -545,7 +547,11 @@ class MLSwingStrategy:
 
         estimated_cost = self.cost_model.estimated_total_cost(self.horizon, 'maker')
         avg_win, avg_loss = estimate_payoff_stats(future_return, trainable)
-        dyn_thr = dynamic_probability_threshold(self.buy_thr, avg_win, avg_loss, estimated_cost)
+        if self.use_dynamic_threshold:
+            dyn_thr = dynamic_probability_threshold(
+                self.buy_thr, avg_win, avg_loss, estimated_cost)
+        else:
+            dyn_thr = float(self.buy_thr)
         ev = expected_value(prob_up, avg_win, avg_loss, estimated_cost)
 
         latest_ts = data.index[-1]

@@ -3,25 +3,19 @@ REAL-MONEY LIVE TRADER for the longer-horizon ML strategy.
 
 ⚠️ THIS PLACES REAL ORDERS ON KRAKEN. ⚠️
 
-It trades the ML strategy (V2 by default, V3 opt-in — see ml_strategy.py) with a
-few conservative, user-chosen settings:
-- Coins: SOL, LINK, DOGE (the long-history core momentum subset with the
-  highest margin-feasible ending equity in the profit harness).
-- Each trade uses confidence sizing at 2x leverage: 15%, 25%, or 35% of usable
-  margin depending on signal strength.
-- On small accounts, size is bumped up to Kraken's minimum order size when
-  the account can afford it (still never above available usable margin).
-- Hold ~3 days (72 x 1h bars), then close (time-based exit).
-- At most one position per coin.
+The script is environment-driven. By default it runs one decision cycle, which
+fits cron/GitHub Actions. Set ML_LIVE_RUN_FOREVER=true to keep it alive as a
+24/7 process that wakes up every ML_LIVE_LOOP_INTERVAL_SEC seconds.
 
 Safety design
 -------------
-- Entries try a post-only LIMIT order first. The bot only falls back to MARKET
-  if the expected value still survives taker fees and slippage. Exits are
-  always MARKET orders (a time-boxed strategy must be able to get out).
-- Long-only by default: the backtested short side barely covered its costs.
 - State (which positions we opened and when to close them) is saved to
   ml_live_state.json so it survives between independent cron runs.
+- Before opening new live positions, the bot reads Kraken open positions so a
+  missing state file does not cause duplicate exposure in the same market.
+- Entries can use maker LIMIT orders or immediate MARKET orders depending on
+  ML_LIVE_MAKER_ENTRY. Exits are always MARKET reduce-only orders.
+- Long-only by default: the researched short side was not reliable enough.
 - Set ML_LIVE_DRY_RUN=true to run the full logic WITHOUT placing real orders
   (read-only account calls only) - useful for testing.
 
@@ -118,6 +112,12 @@ CONFIDENCE_HIGH_PROB = _env_float('ML_LIVE_CONFIDENCE_HIGH_PROB', 0.78)
 CONFIDENCE_LOW_FRACTION = _env_float('ML_LIVE_CONFIDENCE_LOW_FRACTION', 0.15)
 CONFIDENCE_MID_FRACTION = _env_float('ML_LIVE_CONFIDENCE_MID_FRACTION', POSITION_FRACTION)
 CONFIDENCE_HIGH_FRACTION = _env_float('ML_LIVE_CONFIDENCE_HIGH_FRACTION', 0.35)
+# When False, buy_thr is used as-is (breakeven math cannot raise the bar).
+USE_DYNAMIC_THRESHOLD = _env_bool('ML_LIVE_USE_DYNAMIC_THRESHOLD', True)
+RUN_FOREVER = _env_bool('ML_LIVE_RUN_FOREVER', False)
+LOOP_INTERVAL_SEC = _env_int('ML_LIVE_LOOP_INTERVAL_SEC', 900)
+# 0 = no wall-clock limit. Set to 24 to run for one day, then exit cleanly.
+LOOP_MAX_RUNTIME_HOURS = _env_float('ML_LIVE_MAX_RUNTIME_HOURS', 0.0)
 
 
 def confidence_size_multiplier(probability: float, threshold: float) -> float:
@@ -188,6 +188,43 @@ def save_state(state: dict) -> None:
 def pair_map(config: Config) -> dict:
     """Map yfinance symbol -> its Kraken pair + minimum order volume."""
     return {p.yf_symbol: p for p in config.TRADING_PAIRS}
+
+
+def normalize_kraken_pair(pair: str | None) -> str:
+    """Normalize Kraken pair aliases enough for open-position comparisons."""
+    if not pair:
+        return ''
+    value = ''.join(ch for ch in str(pair).upper() if ch.isalnum())
+    aliases = {
+        'XXBTZUSD': 'XBTUSD',
+        'XBTZUSD': 'XBTUSD',
+        'XETHZUSD': 'ETHUSD',
+        'XXDGZUSD': 'XDGUSD',
+        'XDGZUSD': 'XDGUSD',
+    }
+    value = aliases.get(value, value)
+    if value.endswith('ZUSD'):
+        value = value[:-4] + 'USD'
+    if value.startswith('XETH'):
+        value = 'ETH' + value[4:]
+    return value
+
+
+def live_open_pair_names(kraken: KrakenClient) -> set[str]:
+    """Return normalized Kraken pair names that currently have live exposure."""
+    open_positions = kraken.get_open_positions()
+    pairs = set()
+    for pos_id, pos_data in open_positions.items():
+        for raw_pair in (pos_data.get('pair'), pos_id):
+            normalized = normalize_kraken_pair(raw_pair)
+            if normalized:
+                pairs.add(normalized)
+    return pairs
+
+
+def pair_is_live_open(pair: str, open_pairs: set[str]) -> bool:
+    """Check whether a Kraken pair is present in a normalized live-position set."""
+    return normalize_kraken_pair(pair) in open_pairs
 
 
 def enter_position(kraken: KrakenClient, kraken_pair: str, order_type: str,
@@ -293,6 +330,7 @@ def main() -> None:
         use_expected_value_filter=USE_EXPECTED_VALUE_FILTER,
         ev_cost_multiplier=EV_COST_MULTIPLIER,
         use_ev_exit=USE_EV_EXIT,
+        use_dynamic_threshold=USE_DYNAMIC_THRESHOLD,
     )
     pairs = pair_map(config)
 
@@ -335,6 +373,11 @@ def main() -> None:
         print(f"❌ Could not read margin: {e}")
         return
     usable_margin = available_margin / MARGIN_SAFETY_FACTOR
+    try:
+        exchange_open_pairs = set() if DRY_RUN else live_open_pair_names(kraken)
+    except Exception as e:
+        print(f"❌ Could not read live open positions: {e}")
+        return
 
     # ── 1) Close positions: time limit OR model says bail early ──
     for symbol in list(state['open'].keys()):
@@ -359,9 +402,23 @@ def main() -> None:
 
         current_price = float(df['Close'].iloc[-1])
         kp = pairs.get(symbol)
+        if kp is None:
+            actions.append(f"⚠️ close {symbol} skipped: no Kraken pair mapping")
+            continue
         try:
             if not DRY_RUN:
+                if not pair_is_live_open(kp.kraken_pair, exchange_open_pairs):
+                    state['closed'].append({**pos, 'symbol': symbol, 'exit_price': current_price,
+                                            'exit_time': str(now), 'pnl_pct': 0.0,
+                                            'exit_reason': 'missing_on_exchange',
+                                            'exit_prob_up': round(exit_prob, 3)})
+                    del state['open'][symbol]
+                    actions.append(
+                        f"STATE CLEANUP {symbol}: tracked position was not open on Kraken; "
+                        "no close order sent")
+                    continue
                 kraken.close_position(kp.kraken_pair, pos['direction'], pos['volume'], LEVERAGE)
+                exchange_open_pairs.discard(normalize_kraken_pair(kp.kraken_pair))
             # Informational realized P&L (price move x leverage).
             if pos['direction'] == 'long':
                 pnl_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100 * LEVERAGE
@@ -392,6 +449,10 @@ def main() -> None:
         df = data_by_symbol.get(symbol)
         kp = pairs.get(symbol)
         if df is None or kp is None:
+            continue
+        if not DRY_RUN and pair_is_live_open(kp.kraken_pair, exchange_open_pairs):
+            actions.append(
+                f"skip {symbol}: live Kraken position already open outside bot state")
             continue
 
         sig = strategy.get_signal(df, btc_data)
@@ -504,6 +565,8 @@ def main() -> None:
                            f"thr={sig.dynamic_threshold:.2f}, ev={sig.expected_value:.2%}, "
                            f"score={sig.score:.2f}, margin ${margin_usd:.2f})")
             remaining_margin = max(0.0, remaining_margin - margin_usd)
+            if not DRY_RUN:
+                exchange_open_pairs.add(normalize_kraken_pair(kp.kraken_pair))
         except Exception as e:
             actions.append(f"⚠️ open {symbol} failed: {e}")
 
@@ -528,5 +591,49 @@ def main() -> None:
         telegram.send(f"<b>{header}</b>{body}")
 
 
+def run_forever() -> None:
+    """Run decision cycles continuously for local/VPS 24/7 operation."""
+    interval = max(60, LOOP_INTERVAL_SEC)
+    started = time.time()
+    max_runtime_sec = LOOP_MAX_RUNTIME_HOURS * 3600 if LOOP_MAX_RUNTIME_HOURS > 0 else None
+    cycle = 0
+
+    print(
+        "ML LIVE LOOP | "
+        f"interval={interval}s | "
+        f"max_runtime_hours={LOOP_MAX_RUNTIME_HOURS:g}"
+    )
+    while True:
+        cycle += 1
+        print(f"\n── cycle {cycle} @ {pd.Timestamp.utcnow().isoformat()} ──")
+        try:
+            main()
+        except KeyboardInterrupt:
+            print("ML live loop interrupted; exiting.")
+            return
+        except Exception as e:
+            print(f"❌ cycle {cycle} crashed: {e}")
+
+        if max_runtime_sec is not None and time.time() - started >= max_runtime_sec:
+            print("ML live loop reached runtime limit; exiting.")
+            return
+
+        sleep_for = interval
+        if max_runtime_sec is not None:
+            remaining = max_runtime_sec - (time.time() - started)
+            if remaining <= 0:
+                print("ML live loop reached runtime limit; exiting.")
+                return
+            sleep_for = min(sleep_for, remaining)
+        try:
+            time.sleep(sleep_for)
+        except KeyboardInterrupt:
+            print("ML live loop interrupted; exiting.")
+            return
+
+
 if __name__ == "__main__":
-    main()
+    if RUN_FOREVER:
+        run_forever()
+    else:
+        main()

@@ -143,6 +143,7 @@ def backtest_symbol(
     exit_fee_rate: float | None = None,
     bear_policy: str | None = None,
     regime_mode: str = 'default',
+    use_dynamic_threshold: bool = True,
 ) -> dict:
     """Run the walk-forward backtest for one coin and return its stats.
 
@@ -236,7 +237,10 @@ def backtest_symbol(
 
         estimated_cost = cost_model.estimated_total_cost(horizon, 'maker')
         avg_win, avg_loss = estimate_payoff_stats(_fwd, last_train_mask) if last_train_mask is not None else (0.0, 0.0)
-        dyn_thr = dynamic_probability_threshold(buy_thr, avg_win, avg_loss, estimated_cost)
+        if use_dynamic_threshold:
+            dyn_thr = dynamic_probability_threshold(buy_thr, avg_win, avg_loss, estimated_cost)
+        else:
+            dyn_thr = float(buy_thr)
         ev = expected_value(prob_up, avg_win, avg_loss, estimated_cost)
 
         regime_name = 'unknown'
@@ -461,6 +465,8 @@ def main() -> None:
     parser.add_argument('--btc-regime-filter', action='store_true')
     parser.add_argument('--relative-strength-filter', action='store_true')
     parser.add_argument('--expected-value-filter', action='store_true')
+    parser.add_argument('--no-dynamic-threshold', action='store_true',
+                        help="Use --buy-thr exactly instead of raising it to the breakeven threshold.")
     parser.add_argument('--maker-entry-fee', type=float, default=0.0023)
     parser.add_argument('--taker-entry-fee', type=float, default=0.0040)
     parser.add_argument('--taker-exit-fee', type=float, default=0.0040)
@@ -546,6 +552,7 @@ def main() -> None:
             ev_cost_multiplier=args.ev_cost_multiplier,
             entry_fee_rate=entry_fee,
             exit_fee_rate=exit_fee,
+            use_dynamic_threshold=not args.no_dynamic_threshold,
         )
         results.append(r)
         all_trades.extend(r.get('trades', []))
