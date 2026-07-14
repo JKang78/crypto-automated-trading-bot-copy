@@ -16,27 +16,28 @@ Runs every 15 minutes in live mode with real money. This is the only scheduled
 trading controller. For a true always-on VPS/local process, run
 `ml_live_trade.py` with `ML_LIVE_RUN_FOREVER=true`.
 
-**Profit-tuned profile (current live default):** scans frequently, but avoids
-forcing weak trades. A sweep of the fixed-threshold live mode found that lower
-thresholds traded more but lost money after fees; the current settings favored
-higher after-fee expectancy. This is not a guarantee of daily profit.
+**Max-profit profile (current live default):** selected by simulated portfolio
+ending equity, not by win rate. It trades the three symbols that carried the
+backtested dollar returns, skips the Fear & Greed fear bucket, and uses maker
+entries to reduce fees. This is not a guarantee of daily profit.
 
-Coins: `SOL-USD, LINK-USD, DOGE-USD, XRP-USD, ADA-USD`.
+Coins: `XRP-USD, LINK-USD, ADA-USD`.
 
 How it trades:
 
 - Long-only (shorts historically destroyed equity in regime research).
-- Buy when `prob_up > 0.65` with a **fixed** threshold (dynamic breakeven raise
+- Buy when `prob_up > 0.70` with a **fixed** threshold (dynamic breakeven raise
   disabled via `ML_LIVE_USE_DYNAMIC_THRESHOLD=false`).
-- Fear & Greed is used as a model feature, but the hard 25–40 fear bucket
-  filter is off.
-- Each trade uses a flat 20% of usable margin at 2x leverage (no confidence
-  sizing tiers).
+- Fear & Greed is used as a model feature and as an entry filter; the 25–40
+  fear bucket is skipped.
+- Each trade normally uses 20% of usable margin at 2x leverage; signals with
+  `prob_up >= 0.78` use 33%, capped by remaining available margin.
 - On small accounts, size is bumped up to Kraken's minimum order when affordable.
 - Hold ~2 days (48 x 1h bars), then close on a time-based exit; early exit if
   model `prob_up` drops below 0.40.
-- At most one position per coin, up to 5 open positions.
-- Entries use market orders so unfilled maker limits do not skip trades.
+- At most one position per coin, up to 3 open positions.
+- Entries try post-only maker limit orders first, then can fall back to market
+  if allowed by the live entry logic.
 - Exits are always market orders (a time-boxed strategy must be able to get out).
 - Before opening new live positions, the bot checks Kraken's open positions so
   a missing or stale `ml_live_state.json` does not create duplicate exposure in
@@ -45,9 +46,8 @@ How it trades:
 State (which positions we opened and when to close them) is saved to
 `ml_live_state.json` and cached between runs so it survives independent cron runs.
 
-The lower-threshold high-frequency profile (thr 0.55, 24h holds) remains easy
-to reproduce with environment overrides, but the recent sweep showed it had
-negative after-fee expectancy. It is not the live default.
+The broader five-coin profile remains easy to reproduce with environment
+overrides, but the latest portfolio test produced lower ending equity.
 
 To test safely, run the workflow manually with `dry_run=true` — it runs the full
 logic without placing real orders.
@@ -153,14 +153,15 @@ Run the standard ML V2 validation backtest that matches the live profile:
 
 ```bash
 venv/bin/python ml_strategy_backtest.py \
-  --symbols SOL-USD,LINK-USD,DOGE-USD,XRP-USD,ADA-USD \
+  --symbols XRP-USD,LINK-USD,ADA-USD \
   --period 720d \
   --horizon 48 \
-  --buy-thr 0.65 \
+  --buy-thr 0.70 \
   --sell-thr 0 \
   --exit-thr 0.40 \
-  --fee 0.0040 \
-  --entry-fee 0.0040 \
+  --fng-filter \
+  --fee 0.0023 \
+  --entry-fee 0.0023 \
   --exit-fee 0.0040 \
   --margin-open-fee 0.0002 \
   --rollover-fee 0.0002 \
