@@ -26,7 +26,7 @@ Coins: `XRP-USD, LINK-USD, ADA-USD`.
 How it trades:
 
 - Long-only (shorts historically destroyed equity in regime research).
-- Buy when `prob_up > 0.70` with a **fixed** threshold (dynamic breakeven raise
+- Buy when `prob_up > 0.65` with a **fixed** threshold (dynamic breakeven raise
   disabled via `ML_LIVE_USE_DYNAMIC_THRESHOLD=false`).
 - Fear & Greed is used as a model feature and as an entry filter; the 25–40
   fear bucket is skipped.
