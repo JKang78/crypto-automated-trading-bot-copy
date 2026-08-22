@@ -67,12 +67,12 @@ jobs:
         ML_LIVE_EXIT_THR: '0.40'
         ML_LIVE_USE_DYNAMIC_THRESHOLD: 'false'
         ML_LIVE_LEVERAGE: '2'
-        ML_LIVE_POSITION_FRACTION: '0.20'
-        ML_LIVE_CONFIDENCE_SIZING: 'true'
+        ML_LIVE_POSITION_FRACTION: '0.33'
+        ML_LIVE_CONFIDENCE_SIZING: 'false'
         ML_LIVE_CONFIDENCE_LOW_PROB: '0.65'
         ML_LIVE_CONFIDENCE_HIGH_PROB: '0.78'
-        ML_LIVE_CONFIDENCE_LOW_FRACTION: '0.20'
-        ML_LIVE_CONFIDENCE_MID_FRACTION: '0.20'
+        ML_LIVE_CONFIDENCE_LOW_FRACTION: '0.33'
+        ML_LIVE_CONFIDENCE_MID_FRACTION: '0.33'
         ML_LIVE_CONFIDENCE_HIGH_FRACTION: '0.33'
         ML_LIVE_MARGIN_SAFETY: '1.0'
         ML_LIVE_ALLOW_MIN_SIZE_BUMP: 'true'
@@ -82,6 +82,10 @@ jobs:
         ML_LIVE_FNG_FILTER: 'true'
         ML_LIVE_MAKER_ENTRY: 'true'
         ML_LIVE_MAKER_WAIT_SEC: '90'
+        # One-time add-on for the already-open XRP fill shown in the alert.
+        # Code requires both this exact original fill and an unconsumed state key.
+        ML_LIVE_ONE_TIME_FULL_MARGIN_SYMBOL: 'XRP-USD'
+        ML_LIVE_ONE_TIME_FULL_MARGIN_ENTRY_PRICE: '1.5481'
         ML_LIVE_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       run: |
         echo "ML LIVE TRADER (strategy=${ML_LIVE_STRATEGY})"

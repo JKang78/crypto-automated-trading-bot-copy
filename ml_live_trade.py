@@ -118,6 +118,13 @@ RUN_FOREVER = _env_bool('ML_LIVE_RUN_FOREVER', False)
 LOOP_INTERVAL_SEC = _env_int('ML_LIVE_LOOP_INTERVAL_SEC', 900)
 # 0 = no wall-clock limit. Set to 24 to run for one day, then exit cleanly.
 LOOP_MAX_RUNTIME_HOURS = _env_float('ML_LIVE_MAX_RUNTIME_HOURS', 0.0)
+# One-off escape hatch for adding the remaining free margin to one specific
+# already-open position.  Both symbol and original entry price must match, and
+# the state file records the operation after its first successful fill.
+ONE_TIME_FULL_MARGIN_SYMBOL = _env_str(
+    'ML_LIVE_ONE_TIME_FULL_MARGIN_SYMBOL', '').strip().upper()
+ONE_TIME_FULL_MARGIN_ENTRY_PRICE = _env_float(
+    'ML_LIVE_ONE_TIME_FULL_MARGIN_ENTRY_PRICE', 0.0)
 
 
 def confidence_size_multiplier(probability: float, threshold: float) -> float:
@@ -134,6 +141,74 @@ def confidence_size_multiplier(probability: float, threshold: float) -> float:
     else:
         target_fraction = CONFIDENCE_HIGH_FRACTION
     return max(0.0, target_fraction / POSITION_FRACTION)
+
+
+def one_time_full_margin_key() -> str:
+    """Stable state key for the narrowly targeted one-time margin add-on."""
+    if not ONE_TIME_FULL_MARGIN_SYMBOL or ONE_TIME_FULL_MARGIN_ENTRY_PRICE <= 0:
+        return ''
+    return (
+        f"{ONE_TIME_FULL_MARGIN_SYMBOL}@"
+        f"{ONE_TIME_FULL_MARGIN_ENTRY_PRICE:.8f}"
+    )
+
+
+def one_time_full_margin_pending(state: dict, symbol: str, position: dict) -> bool:
+    """Only match the configured symbol and the original position's fill."""
+    key = one_time_full_margin_key()
+    if not key or symbol.upper() != ONE_TIME_FULL_MARGIN_SYMBOL:
+        return False
+    if key in state.get('consumed_one_time_margin_overrides', []):
+        return False
+    entry_price = float(position.get('entry_price', 0.0) or 0.0)
+    # The alert rounds XRP to four decimals. Accommodate sub-tick fill detail
+    # while preventing a later XRP position from accidentally matching.
+    tolerance = max(0.00005, ONE_TIME_FULL_MARGIN_ENTRY_PRICE * 0.00005)
+    return abs(entry_price - ONE_TIME_FULL_MARGIN_ENTRY_PRICE) <= tolerance
+
+
+def consume_one_time_full_margin(state: dict) -> None:
+    """Persist successful use so later scheduled runs cannot repeat it."""
+    key = one_time_full_margin_key()
+    if not key:
+        return
+    consumed = state.setdefault('consumed_one_time_margin_overrides', [])
+    if key not in consumed:
+        consumed.append(key)
+
+
+def build_live_strategy() -> MLSwingStrategy:
+    """Build the strategy with the exact environment settings used live."""
+    cost_model = build_cost_model(
+        PROFILE,
+        maker_entry_fee=MAKER_ENTRY_FEE,
+        taker_entry_fee=TAKER_ENTRY_FEE,
+        taker_exit_fee=TAKER_EXIT_FEE,
+        margin_open_fee=MARGIN_OPEN_FEE,
+        margin_rollover_fee_4h=ROLLOVER_FEE_4H,
+        spread_buffer=SPREAD_BUFFER,
+        slippage_buffer=SLIPPAGE_BUFFER,
+        minimum_edge=MINIMUM_EDGE,
+    )
+    return create_ml_strategy(
+        PROFILE,
+        cost_model,
+        horizon=HORIZON,
+        buy_thr=BUY_THR,
+        sell_thr=SELL_THR,
+        exit_thr=EXIT_THR,
+        use_fng_features=USE_FNG_FEATURES,
+        use_fng_filter=USE_FNG_FILTER,
+        long_only=LONG_ONLY,
+        use_cost_aware_labels=USE_COST_AWARE_LABELS,
+        use_btc_features=USE_BTC_FEATURES,
+        use_btc_regime_filter=USE_BTC_REGIME_FILTER,
+        use_relative_strength_filter=USE_RELATIVE_STRENGTH_FILTER,
+        use_expected_value_filter=USE_EXPECTED_VALUE_FILTER,
+        ev_cost_multiplier=EV_COST_MULTIPLIER,
+        use_ev_exit=USE_EV_EXIT,
+        use_dynamic_threshold=USE_DYNAMIC_THRESHOLD,
+    )
 
 
 def size_trade(
@@ -199,6 +274,8 @@ def normalize_kraken_pair(pair: str | None) -> str:
         'XXBTZUSD': 'XBTUSD',
         'XBTZUSD': 'XBTUSD',
         'XETHZUSD': 'ETHUSD',
+        'XXRPZUSD': 'XRPUSD',
+        'XRPZUSD': 'XRPUSD',
         'XXDGZUSD': 'XDGUSD',
         'XDGZUSD': 'XDGUSD',
     }
@@ -302,36 +379,8 @@ def main() -> None:
     config = Config()
     kraken = KrakenClient(config.KRAKEN_API_KEY, config.KRAKEN_API_SECRET, config.KRAKEN_API_URL)
     telegram = Telegram(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
-    cost_model = build_cost_model(
-        PROFILE,
-        maker_entry_fee=MAKER_ENTRY_FEE,
-        taker_entry_fee=TAKER_ENTRY_FEE,
-        taker_exit_fee=TAKER_EXIT_FEE,
-        margin_open_fee=MARGIN_OPEN_FEE,
-        margin_rollover_fee_4h=ROLLOVER_FEE_4H,
-        spread_buffer=SPREAD_BUFFER,
-        slippage_buffer=SLIPPAGE_BUFFER,
-        minimum_edge=MINIMUM_EDGE,
-    )
-    strategy = create_ml_strategy(
-        PROFILE,
-        cost_model,
-        horizon=HORIZON,
-        buy_thr=BUY_THR,
-        sell_thr=SELL_THR,
-        exit_thr=EXIT_THR,
-        use_fng_features=USE_FNG_FEATURES,
-        use_fng_filter=USE_FNG_FILTER,
-        long_only=LONG_ONLY,
-        use_cost_aware_labels=USE_COST_AWARE_LABELS,
-        use_btc_features=USE_BTC_FEATURES,
-        use_btc_regime_filter=USE_BTC_REGIME_FILTER,
-        use_relative_strength_filter=USE_RELATIVE_STRENGTH_FILTER,
-        use_expected_value_filter=USE_EXPECTED_VALUE_FILTER,
-        ev_cost_multiplier=EV_COST_MULTIPLIER,
-        use_ev_exit=USE_EV_EXIT,
-        use_dynamic_threshold=USE_DYNAMIC_THRESHOLD,
-    )
+    strategy = build_live_strategy()
+    cost_model = strategy.cost_model
     pairs = pair_map(config)
 
     mode = "🧪 DRY-RUN (no real orders)" if DRY_RUN else "💰 REAL MONEY"
@@ -434,6 +483,85 @@ def main() -> None:
         except Exception as e:
             actions.append(f"⚠️ close {symbol} failed: {e}")
 
+    # A narrowly targeted, stateful one-time add-on for an already-open trade.
+    # This is intentionally separate from normal 33% entry sizing: it only
+    # matches the configured original fill and consumes itself after a fill.
+    margin_committed_this_run = 0.0
+    topup_symbol = ONE_TIME_FULL_MARGIN_SYMBOL
+    topup_pos = state['open'].get(topup_symbol) if topup_symbol else None
+    if topup_pos and one_time_full_margin_pending(state, topup_symbol, topup_pos):
+        df = data_by_symbol.get(topup_symbol)
+        kp = pairs.get(topup_symbol)
+        if df is None or kp is None:
+            actions.append(f"skip one-time full-margin {topup_symbol}: missing market data/pair")
+        elif topup_pos.get('direction') != 'long':
+            actions.append(f"skip one-time full-margin {topup_symbol}: position is not long")
+        else:
+            sig = strategy.get_signal(df, btc_data)
+            if sig.signal != 'BUY':
+                actions.append(
+                    f"skip one-time full-margin {topup_symbol}: BUY prediction no longer active "
+                    f"(p={sig.prob_up:.2f}, thr={sig.dynamic_threshold:.2f})"
+                )
+            else:
+                current_price = float(df['Close'].iloc[-1])
+                margin_usd, volume, _ = size_trade(
+                    usable_margin=usable_margin,
+                    position_fraction=1.0,
+                    conf_mult=1.0,
+                    regime_mult=1.0,
+                    leverage=LEVERAGE,
+                    price=current_price,
+                    min_volume=kp.min_volume,
+                    allow_min_bump=False,
+                )
+                taker_cost = cost_model.estimated_total_cost(HORIZON, 'taker')
+                taker_ev = expected_value(sig.prob_up, sig.avg_win, sig.avg_loss, taker_cost)
+                allow_market_fallback = (
+                    taker_ev > 0 and taker_ev > EV_COST_MULTIPLIER * taker_cost
+                    if EV_GATED_MARKET_FALLBACK else True
+                )
+                try:
+                    entry_price, fill_how, filled_volume = enter_position(
+                        kraken, kp.kraken_pair, 'buy', volume, LEVERAGE,
+                        current_price, allow_market_fallback)
+                    if entry_price is None or filled_volume <= 0:
+                        actions.append(
+                            f"skip one-time full-margin {topup_symbol}: order did not fill"
+                        )
+                    else:
+                        old_volume = float(topup_pos.get('volume', 0.0) or 0.0)
+                        old_entry = float(topup_pos.get('entry_price', entry_price) or entry_price)
+                        total_volume = old_volume + filled_volume
+                        weighted_entry = (
+                            (old_entry * old_volume + entry_price * filled_volume) / total_volume
+                            if total_volume > 0 else entry_price
+                        )
+                        fill_fraction = min(1.0, filled_volume / volume) if volume > 0 else 0.0
+                        allocated_margin = margin_usd * fill_fraction
+                        topup_pos['entry_price'] = weighted_entry
+                        topup_pos['volume'] = round(total_volume, 8)
+                        topup_pos['margin_usd'] = round(
+                            float(topup_pos.get('margin_usd', 0.0) or 0.0) + allocated_margin,
+                            2,
+                        )
+                        topup_pos.setdefault('topups', []).append({
+                            'time': str(df.index[-1]),
+                            'price': entry_price,
+                            'volume': round(filled_volume, 8),
+                            'margin_usd': round(allocated_margin, 2),
+                            'fill': fill_how,
+                            'reason': 'one_time_full_margin',
+                        })
+                        consume_one_time_full_margin(state)
+                        margin_committed_this_run = allocated_margin
+                        actions.append(
+                            f"ONE-TIME FULL-MARGIN {topup_symbol} ADD @ {entry_price:.4f} "
+                            f"vol={filled_volume:.6f} ({fill_how}, margin ${allocated_margin:.2f})"
+                        )
+                except Exception as e:
+                    actions.append(f"⚠️ one-time full-margin {topup_symbol} failed: {e}")
+
     # ── 2) Rank eligible high-margin signals, then open top opportunities ──
     latest_ts = max(df.index[-1] for df in data_by_symbol.values()) if data_by_symbol else pd.Timestamp.utcnow()
     btc_state = btc_regime_state(btc_regimes, latest_ts) if btc_regimes is not None else None
@@ -482,7 +610,7 @@ def main() -> None:
 
     candidates.sort(key=lambda item: (0 if can_afford(item) else 1, -item[3].score))
 
-    remaining_margin = usable_margin
+    remaining_margin = max(0.0, usable_margin - margin_committed_this_run)
     for symbol, kp, df, sig in candidates[:open_slots]:
         current_price = float(df['Close'].iloc[-1])
         conf_mult = (confidence_size_multiplier(sig.prob_up, sig.dynamic_threshold)
