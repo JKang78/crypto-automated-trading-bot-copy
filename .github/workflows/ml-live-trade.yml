@@ -86,6 +86,7 @@ jobs:
         # Code requires both this exact original fill and an unconsumed state key.
         ML_LIVE_ONE_TIME_FULL_MARGIN_SYMBOL: 'XRP-USD'
         ML_LIVE_ONE_TIME_FULL_MARGIN_ENTRY_PRICE: '1.5481'
+        ML_LIVE_ONE_TIME_FULL_MARGIN_UTILIZATION: '0.99'
         ML_LIVE_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
       run: |
         echo "ML LIVE TRADER (strategy=${ML_LIVE_STRATEGY})"

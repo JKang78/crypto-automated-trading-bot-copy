@@ -125,6 +125,10 @@ ONE_TIME_FULL_MARGIN_SYMBOL = _env_str(
     'ML_LIVE_ONE_TIME_FULL_MARGIN_SYMBOL', '').strip().upper()
 ONE_TIME_FULL_MARGIN_ENTRY_PRICE = _env_float(
     'ML_LIVE_ONE_TIME_FULL_MARGIN_ENTRY_PRICE', 0.0)
+# Kraken can reject a literal 100% order because opening fees/reference-price
+# movement count against free margin. 99% is the executable full-margin target.
+ONE_TIME_FULL_MARGIN_UTILIZATION = min(1.0, max(0.0, _env_float(
+    'ML_LIVE_ONE_TIME_FULL_MARGIN_UTILIZATION', 0.99)))
 
 
 def confidence_size_multiplier(probability: float, threshold: float) -> float:
@@ -507,7 +511,7 @@ def main() -> None:
                 current_price = float(df['Close'].iloc[-1])
                 margin_usd, volume, _ = size_trade(
                     usable_margin=usable_margin,
-                    position_fraction=1.0,
+                    position_fraction=ONE_TIME_FULL_MARGIN_UTILIZATION,
                     conf_mult=1.0,
                     regime_mult=1.0,
                     leverage=LEVERAGE,
