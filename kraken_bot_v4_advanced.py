@@ -281,6 +281,28 @@ class KrakenClient:
             print(f"   ⚠️ Error getting margin: {e}")
             balance, _ = self.get_balance()
             return balance * 0.5
+
+    def get_margin_balances(self) -> Tuple[float, float]:
+        """Return (account equity, free margin) from Kraken TradeBalance.
+
+        Kraken defines ``e`` as trade balance plus unrealized P&L and ``mf``
+        as equity less initial margin. Keeping both values lets callers size a
+        target from total equity while still capping orders to executable free
+        margin.
+        """
+        try:
+            result = self._request('/0/private/TradeBalance', private=True)
+            margin_free = float(result.get('mf', 0) or 0)
+            equity = float(result.get('e', result.get('eb', margin_free)) or 0)
+            if equity <= 0:
+                equity = margin_free
+            print(f"   💰 Account equity: {equity:.2f} EUR")
+            print(f"   💰 Available margin: {margin_free:.2f} EUR")
+            return equity, margin_free
+        except Exception as e:
+            print(f"   ⚠️ Error getting equity/free margin: {e}")
+            balance, _ = self.get_balance()
+            return balance, balance * 0.5
     
     def get_open_positions(self) -> Dict:
         try:

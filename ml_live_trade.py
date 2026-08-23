@@ -425,11 +425,12 @@ def main() -> None:
 
     # Read live account state (safe, read-only).
     try:
-        available_margin = kraken.get_available_margin()
+        account_equity, available_margin = kraken.get_margin_balances()
     except Exception as e:
-        print(f"❌ Could not read margin: {e}")
+        print(f"❌ Could not read equity/margin: {e}")
         return
-    usable_margin = available_margin / MARGIN_SAFETY_FACTOR
+    sizing_equity = account_equity / MARGIN_SAFETY_FACTOR
+    usable_free_margin = available_margin / MARGIN_SAFETY_FACTOR
     try:
         exchange_open_pairs = set() if DRY_RUN else live_open_pair_names(kraken)
     except Exception as e:
@@ -514,7 +515,7 @@ def main() -> None:
             else:
                 current_price = float(df['Close'].iloc[-1])
                 margin_usd, volume, _ = size_trade(
-                    usable_margin=usable_margin,
+                    usable_margin=usable_free_margin,
                     position_fraction=ONE_TIME_FULL_MARGIN_UTILIZATION,
                     conf_mult=1.0,
                     regime_mult=1.0,
@@ -614,17 +615,17 @@ def main() -> None:
         symbol, kp, df, sig = item
         price = float(df['Close'].iloc[-1])
         min_margin = (kp.min_volume * price) / LEVERAGE if LEVERAGE > 0 else float('inf')
-        return min_margin <= usable_margin
+        return min_margin <= usable_free_margin
 
     candidates.sort(key=lambda item: (0 if can_afford(item) else 1, -item[3].score))
 
-    remaining_margin = max(0.0, usable_margin - margin_committed_this_run)
+    remaining_margin = max(0.0, usable_free_margin - margin_committed_this_run)
     for symbol, kp, df, sig in candidates[:open_slots]:
         current_price = float(df['Close'].iloc[-1])
         conf_mult = (confidence_size_multiplier(sig.prob_up, sig.dynamic_threshold)
                      if USE_CONFIDENCE_SIZING else 1.0)
         margin_usd, volume, size_note = size_trade(
-            usable_margin=usable_margin,
+            usable_margin=sizing_equity,
             position_fraction=POSITION_FRACTION,
             conf_mult=conf_mult,
             regime_mult=sig.regime_size_multiplier,
@@ -643,7 +644,7 @@ def main() -> None:
             actions.append(
                 f"skip {symbol}: need >= ${min_margin:.2f} margin for min size "
                 f"{kp.min_volume} (have ${remaining_margin:.2f} remaining, "
-                f"target ${usable_margin * POSITION_FRACTION:.2f})"
+                f"target ${sizing_equity * POSITION_FRACTION:.2f})"
             )
             continue
         if size_note == 'bumped_to_exchange_min':
@@ -714,7 +715,8 @@ def main() -> None:
     win_rate = (len(wins) / n_closed * 100) if n_closed else 0.0
 
     header = f"{'🧪 ML DRY-RUN' if DRY_RUN else '💰 ML LIVE'} TRADER"
-    body = (f"\nUsable margin: ${usable_margin:.2f}"
+    body = (f"\nSizing equity: ${sizing_equity:.2f}"
+            f"\nFree margin: ${usable_free_margin:.2f}"
             f"\nOpen positions: {len(state['open'])}/{MAX_OPEN}"
             f"\nClosed trades: {n_closed} | Win rate: {win_rate:.1f}%")
     if actions:
