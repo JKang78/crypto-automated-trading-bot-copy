@@ -282,6 +282,10 @@ def normalize_kraken_pair(pair: str | None) -> str:
         'XRPZUSD': 'XRPUSD',
         'XXDGZUSD': 'XDGUSD',
         'XDGZUSD': 'XDGUSD',
+        'XLTCZUSD': 'LTCUSD',
+        'LTCZUSD': 'LTCUSD',
+        'XXLMZUSD': 'XLMUSD',
+        'XLMZUSD': 'XLMUSD',
     }
     value = aliases.get(value, value)
     if value.endswith('ZUSD'):

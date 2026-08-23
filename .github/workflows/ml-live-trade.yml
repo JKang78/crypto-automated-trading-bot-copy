@@ -61,7 +61,7 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         ML_LIVE_STRATEGY: ${{ github.event.inputs.strategy || 'v2' }}
-        ML_LIVE_SYMBOLS: 'XRP-USD,LINK-USD,ADA-USD,SOL-USD,DOGE-USD'
+        ML_LIVE_SYMBOLS: 'XRP-USD,LINK-USD,ADA-USD,SOL-USD,DOGE-USD,AVAX-USD,DOT-USD,LTC-USD,XLM-USD'
         ML_LIVE_BUY_THR: '0.65'
         ML_LIVE_HORIZON: '48'
         ML_LIVE_EXIT_THR: '0.40'

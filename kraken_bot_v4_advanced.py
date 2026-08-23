@@ -158,6 +158,10 @@ class Config:
         # Kraken minimums checked via the public AssetPairs API.
         TradingPair('LINK-USD', 'LINKUSD', 0.55, 0.20),
         TradingPair('DOGE-USD', 'XDGUSD', 50.0, 0.20),
+        TradingPair('AVAX-USD', 'AVAXUSD', 0.5, 0.20),
+        TradingPair('DOT-USD', 'DOTUSD', 3.9, 0.20),
+        TradingPair('LTC-USD', 'LTCUSD', 0.1, 0.20),
+        TradingPair('XLM-USD', 'XLMUSD', 30.0, 0.20),
     ]
     
     MAX_CORRELATION = float(os.getenv('MAX_CORRELATION', '0.7'))
