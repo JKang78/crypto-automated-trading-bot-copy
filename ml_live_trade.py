@@ -601,6 +601,13 @@ def main() -> None:
                     f"skip {symbol}: {sig.blocked_reason} "
                     f"(p={sig.prob_up:.2f}, ev={sig.expected_value:.3%}, "
                     f"thr={sig.dynamic_threshold:.2f}, rs7={sig.relative_strength_7d:.2%})")
+            else:
+                # A below-threshold prediction is an expected, non-error
+                # outcome, but it must be visible in the workflow logs.
+                actions.append(
+                    f"skip {symbol}: no entry signal "
+                    f"(p={sig.prob_up:.2f}, thr={sig.dynamic_threshold:.2f}, "
+                    f"ev={sig.expected_value:.3%}, score={sig.score:.2f})")
             continue
         if LONG_ONLY and sig.signal == 'SELL':
             actions.append(f"skip {symbol}: SELL signal ignored (long-only mode, p_up={sig.prob_up:.2f})")

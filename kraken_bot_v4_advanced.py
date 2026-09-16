@@ -37,8 +37,10 @@ def load_env_file(path: str = ".env") -> None:
         key = key.strip()
         value = value.strip()
         if key:
-            # .env file is the source of truth (fixes empty shell exports)
-            os.environ[key] = value
+            # Preserve explicit process environment. This is particularly
+            # important for a safe one-off `ML_LIVE_DRY_RUN=true` invocation:
+            # an existing local .env must not silently turn it into live mode.
+            os.environ.setdefault(key, value)
 
 
 load_env_file()
