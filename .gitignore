@@ -13,6 +13,10 @@ v4_position_state.json
 ml_paper_state.json
 ml_paper_state_h72.json
 ml_live_state.json
+paper_comparison*.json
+paper_comparison*.json.tmp
+paper_comparison_report.md
+validation_outputs/
 long_history_run.log
 partial_history_results.txt
 data_cc/
