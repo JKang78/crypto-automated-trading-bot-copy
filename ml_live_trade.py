@@ -43,6 +43,7 @@ from ml_strategy import (
     expected_value,
     get_strategy_profile,
 )
+from portfolio_profiles import get_portfolio_profile
 
 
 def _env_str(name: str, default: str) -> str:
@@ -69,9 +70,11 @@ def _env_bool(name: str, default: bool) -> bool:
 # ─────────────────────────── Settings (env-overridable) ───────────────────────────
 STRATEGY_VERSION = _env_str('ML_LIVE_STRATEGY', 'v2').lower()
 PROFILE = get_strategy_profile(STRATEGY_VERSION)
+PORTFOLIO_NAME = _env_str('ML_LIVE_PORTFOLIO', '').strip().lower()
+PORTFOLIO = get_portfolio_profile(PORTFOLIO_NAME) if PORTFOLIO_NAME else None
 STATE_FILE = _env_str('ML_LIVE_STATE_FILE', 'ml_live_state.json')
-SYMBOLS = [s.strip() for s in _env_str(
-    'ML_LIVE_SYMBOLS', 'SOL-USD,LINK-USD,DOGE-USD').split(',') if s.strip()]
+SYMBOLS = (list(PORTFOLIO.symbols) if PORTFOLIO else [s.strip() for s in _env_str(
+    'ML_LIVE_SYMBOLS', 'SOL-USD,LINK-USD,DOGE-USD').split(',') if s.strip()])
 PERIOD = _env_str('ML_LIVE_PERIOD', '720d')
 INTERVAL = _env_str('ML_LIVE_INTERVAL', '1h')
 HORIZON = _env_int('ML_LIVE_HORIZON', PROFILE.horizon)
@@ -80,9 +83,10 @@ SELL_THR = _env_float('ML_LIVE_SELL_THR', 0.0 if PROFILE.long_only else 0.35)
 EXIT_THR = _env_float('ML_LIVE_EXIT_THR', PROFILE.exit_thr)
 USE_FNG_FEATURES = _env_bool('ML_LIVE_FNG_FEATURES', PROFILE.use_fng_features)
 USE_FNG_FILTER = _env_bool('ML_LIVE_FNG_FILTER', PROFILE.use_fng_filter)
-LEVERAGE = _env_int('ML_LIVE_LEVERAGE', 2)
-POSITION_FRACTION = _env_float('ML_LIVE_POSITION_FRACTION', 0.25)
-MAX_OPEN = _env_int('ML_LIVE_MAX_OPEN', 3)
+LEVERAGE = _env_int('ML_LIVE_LEVERAGE', PORTFOLIO.leverage if PORTFOLIO else 2)
+POSITION_FRACTION = _env_float(
+    'ML_LIVE_POSITION_FRACTION', PORTFOLIO.position_fraction if PORTFOLIO else 0.25)
+MAX_OPEN = _env_int('ML_LIVE_MAX_OPEN', PORTFOLIO.max_open if PORTFOLIO else 3)
 MARGIN_SAFETY_FACTOR = _env_float('ML_LIVE_MARGIN_SAFETY', 1.5)
 # When True, bump a too-small 25% size up to Kraken's min order if affordable.
 ALLOW_MIN_SIZE_BUMP = _env_bool('ML_LIVE_ALLOW_MIN_SIZE_BUMP', True)
@@ -181,8 +185,8 @@ def consume_one_time_full_margin(state: dict) -> None:
         consumed.append(key)
 
 
-def build_live_strategy() -> MLSwingStrategy:
-    """Build the strategy with the exact environment settings used live."""
+def build_live_strategies() -> dict[str, MLSwingStrategy]:
+    """Build one strategy per symbol, including coin-specific portfolio rules."""
     cost_model = build_cost_model(
         PROFILE,
         maker_entry_fee=MAKER_ENTRY_FEE,
@@ -194,25 +198,35 @@ def build_live_strategy() -> MLSwingStrategy:
         slippage_buffer=SLIPPAGE_BUFFER,
         minimum_edge=MINIMUM_EDGE,
     )
-    return create_ml_strategy(
-        PROFILE,
-        cost_model,
-        horizon=HORIZON,
-        buy_thr=BUY_THR,
-        sell_thr=SELL_THR,
-        exit_thr=EXIT_THR,
-        use_fng_features=USE_FNG_FEATURES,
-        use_fng_filter=USE_FNG_FILTER,
-        long_only=LONG_ONLY,
-        use_cost_aware_labels=USE_COST_AWARE_LABELS,
-        use_btc_features=USE_BTC_FEATURES,
-        use_btc_regime_filter=USE_BTC_REGIME_FILTER,
-        use_relative_strength_filter=USE_RELATIVE_STRENGTH_FILTER,
-        use_expected_value_filter=USE_EXPECTED_VALUE_FILTER,
-        ev_cost_multiplier=EV_COST_MULTIPLIER,
-        use_ev_exit=USE_EV_EXIT,
-        use_dynamic_threshold=USE_DYNAMIC_THRESHOLD,
-    )
+    definitions = PORTFOLIO.symbols if PORTFOLIO else {symbol: PROFILE for symbol in SYMBOLS}
+    strategies = {}
+    for symbol, profile in definitions.items():
+        strategies[symbol] = create_ml_strategy(
+            profile,
+            cost_model,
+            horizon=profile.horizon if PORTFOLIO else HORIZON,
+            buy_thr=profile.buy_thr if PORTFOLIO else BUY_THR,
+            sell_thr=SELL_THR,
+            exit_thr=profile.exit_thr if PORTFOLIO else EXIT_THR,
+            use_fng_features=USE_FNG_FEATURES,
+            use_fng_filter=USE_FNG_FILTER,
+            long_only=LONG_ONLY,
+            use_cost_aware_labels=USE_COST_AWARE_LABELS,
+            use_btc_features=USE_BTC_FEATURES,
+            use_btc_regime_filter=USE_BTC_REGIME_FILTER,
+            use_relative_strength_filter=USE_RELATIVE_STRENGTH_FILTER,
+            use_expected_value_filter=USE_EXPECTED_VALUE_FILTER,
+            ev_cost_multiplier=EV_COST_MULTIPLIER,
+            use_ev_exit=USE_EV_EXIT,
+            use_dynamic_threshold=(PORTFOLIO.use_dynamic_threshold
+                                   if PORTFOLIO else USE_DYNAMIC_THRESHOLD),
+        )
+    return strategies
+
+
+def build_live_strategy() -> MLSwingStrategy:
+    """Backward-compatible helper for callers expecting one shared strategy."""
+    return next(iter(build_live_strategies().values()))
 
 
 def size_trade(
@@ -387,12 +401,13 @@ def main() -> None:
     config = Config()
     kraken = KrakenClient(config.KRAKEN_API_KEY, config.KRAKEN_API_SECRET, config.KRAKEN_API_URL)
     telegram = Telegram(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
-    strategy = build_live_strategy()
-    cost_model = strategy.cost_model
+    strategies = build_live_strategies()
+    cost_model = next(iter(strategies.values())).cost_model
     pairs = pair_map(config)
 
     mode = "🧪 DRY-RUN (no real orders)" if DRY_RUN else "💰 REAL MONEY"
-    print(f"ML LIVE TRADER | {mode} | strategy={STRATEGY_VERSION.upper()} | "
+    strategy_label = PORTFOLIO_NAME or STRATEGY_VERSION.upper()
+    print(f"ML LIVE TRADER | {mode} | strategy={strategy_label} | "
           f"coins={SYMBOLS} | {POSITION_FRACTION:.0%}/trade @ {LEVERAGE}x")
 
     if not config.KRAKEN_API_KEY or not config.KRAKEN_API_SECRET:
@@ -440,14 +455,16 @@ def main() -> None:
     # ── 1) Close positions: time limit OR model says bail early ──
     for symbol in list(state['open'].keys()):
         pos = state['open'][symbol]
+        strategy = strategies.get(symbol)
         df = data_by_symbol.get(symbol)
-        if df is None:
+        if df is None or strategy is None:
+            actions.append(f"⚠️ close {symbol} skipped: no market data/strategy mapping")
             continue
         now = df.index[-1]
         time_due = now >= pd.Timestamp(pos['exit_due'])
         early_exit = False
         exit_prob = pos.get('prob_up', 0.5)
-        if not time_due and pos['direction'] == 'long' and EXIT_THR > 0:
+        if not time_due and pos['direction'] == 'long' and strategy.exit_thr > 0:
             early_exit, exit_prob = strategy.should_exit_early(df, btc_data)
         btc_exit = False
         if USE_BTC_REGIME_FILTER and btc_regimes is not None:
@@ -499,9 +516,10 @@ def main() -> None:
     topup_symbol = ONE_TIME_FULL_MARGIN_SYMBOL
     topup_pos = state['open'].get(topup_symbol) if topup_symbol else None
     if topup_pos and one_time_full_margin_pending(state, topup_symbol, topup_pos):
+        strategy = strategies.get(topup_symbol)
         df = data_by_symbol.get(topup_symbol)
         kp = pairs.get(topup_symbol)
-        if df is None or kp is None:
+        if df is None or kp is None or strategy is None:
             actions.append(f"skip one-time full-margin {topup_symbol}: missing market data/pair")
         elif topup_pos.get('direction') != 'long':
             actions.append(f"skip one-time full-margin {topup_symbol}: position is not long")
@@ -524,7 +542,7 @@ def main() -> None:
                     min_volume=kp.min_volume,
                     allow_min_bump=False,
                 )
-                taker_cost = cost_model.estimated_total_cost(HORIZON, 'taker')
+                taker_cost = cost_model.estimated_total_cost(strategy.horizon, 'taker')
                 taker_ev = expected_value(sig.prob_up, sig.avg_win, sig.avg_loss, taker_cost)
                 allow_market_fallback = (
                     taker_ev > 0 and taker_ev > EV_COST_MULTIPLIER * taker_cost
@@ -592,6 +610,7 @@ def main() -> None:
                 f"skip {symbol}: live Kraken position already open outside bot state")
             continue
 
+        strategy = strategies[symbol]
         sig = strategy.get_signal(df, btc_data)
         if sig.signal not in ('BUY', 'SELL'):
             if sig.blocked_reason == 'fng_fear_bucket':
@@ -668,7 +687,8 @@ def main() -> None:
         order_type = 'buy' if sig.signal == 'BUY' else 'sell'
         direction = 'long' if sig.signal == 'BUY' else 'short'
         now = df.index[-1]
-        taker_cost = cost_model.estimated_total_cost(HORIZON, 'taker')
+        strategy = strategies[symbol]
+        taker_cost = cost_model.estimated_total_cost(strategy.horizon, 'taker')
         taker_ev = expected_value(sig.prob_up, sig.avg_win, sig.avg_loss, taker_cost)
         allow_market_fallback = (
             taker_ev > 0 and taker_ev > EV_COST_MULTIPLIER * taker_cost
@@ -691,7 +711,7 @@ def main() -> None:
                 'direction': direction,
                 'entry_price': entry_price,
                 'entry_time': str(now),
-                'exit_due': str(now + timedelta(hours=HORIZON)),
+                'exit_due': str(now + timedelta(hours=strategy.horizon)),
                 'volume': round(filled_volume, 8),
                 'prob_up': round(sig.prob_up, 3),
                 'expected_value': round(sig.expected_value, 5),
@@ -703,6 +723,8 @@ def main() -> None:
                 'leverage': LEVERAGE,
                 'entry_fill': fill_how,
                 'model_version': STRATEGY_VERSION,
+                'portfolio': PORTFOLIO_NAME or None,
+                'horizon': strategy.horizon,
             }
             actions.append(f"OPEN {symbol} {direction.upper()} @ {entry_price:.4f} "
                            f"vol={filled_volume:.6f} ({fill_how}, p={sig.prob_up:.2f}, "
